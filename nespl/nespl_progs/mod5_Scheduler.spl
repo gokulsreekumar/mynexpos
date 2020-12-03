@@ -1,0 +1,136 @@
+// ----------------------------------------------- SCHEDULER MODULE ------------------------------------------------------------------ //
+
+// SCHED_LOCK must be acquired by calling AcquireSchedLock() function
+multipush(R0);
+    R1 = ACQUIRE_SCHED_LOCK;
+    call ACCESS_CONTROL;
+multipop(R0);
+
+alias currentPID R0;
+currentPID = [SYSTEM_STATUS_TABLE + 5*CORE + 1]; // Current Process in CORE 1
+
+multipush(BP);
+
+// Get Process Table for curr and Save KPTR, PTBR, PTLR
+alias process_table_entry R1;
+process_table_entry = PROCESS_TABLE + currentPID * 16;
+
+[process_table_entry + 12] = SP % 512;
+[process_table_entry + 14] = PTBR;
+[process_table_entry + 15] = PTLR;
+
+alias newPID R2;
+
+if(CORE == PRIMARY_CORE) then
+
+    //----  PRIMARY CORE ---------------------------------------------------------------------
+
+    //----* Paging is ongoing *----//
+    // check Paging Status Field in SYSTEM_STATUS_TABLE
+    if([SYSTEM_STATUS_TABLE + 5] != 0) then
+        //--* the paging process is executing a disk operation (SWAPPER DAEMON is BLOCKED) *--/
+        if ([PROCESS_TABLE + SWAPPER_DAEMON*16 + 4] == WAIT_DISK) then
+            // IDLE PROCESS PID = 0
+            newPID = IDLE_PROCESS;
+        else
+            newPID = SWAPPER_DAEMON;
+        endif;
+    else
+
+        // If LOGOUT_STATUS=1 and the secondary core is not running IDLE2
+        if( [SYSTEM_STATUS_TABLE + 7] == 1 && [SYSTEM_STATUS_TABLE + 6] != IDLE2_PROCESS ) then
+            newPID = IDLE_PROCESS;
+            goto newPidFound;
+        endif;
+
+        // Round Robin
+        newPID = currentPID + 1;
+        alias count R3;
+        count = 1;
+        while(count <= 16) do
+            if( newPID == SWAPPER_DAEMON || newPID == IDLE2_PROCESS || newPID == [SYSTEM_STATUS_TABLE + 6]) then
+                // if SWAPPER_DAEMON or IDLE2_PROCESS or Process Currently running on CORE 2 don't Schedule
+                goto cont;
+            endif;
+            if(([PROCESS_TABLE + (newPID*16) + 4] == READY || [PROCESS_TABLE + (newPID*16) + 4] == CREATED) && [PROCESS_TABLE + (newPID*16) + 6] == 0) then
+                break;
+            endif;
+            cont:
+                newPID = ((newPID + 1)%16);
+                count = count + 1;
+        endwhile;
+
+        if(count >= 17) then
+            newPID = 0;
+        endif;
+
+    endif;
+
+else
+    //----  SECONDARY CORE ---------------------------------------------------------------------
+    //----* Paging is ongoing OR LOGOUT_STATUS is set *----//
+    // check Paging Status and LOGOUT_STATUS in SYSTEM_STATUS_TABLE
+    if( [SYSTEM_STATUS_TABLE + 5] != 0 || [SYSTEM_STATUS_TABLE + 7] == 1) then
+        newPID = IDLE2_PROCESS;
+        goto newPidFound;
+    else
+        // Round Robin
+        newPID = currentPID + 1;
+        alias count R3;
+        count = 1;
+        while(count <= 16) do
+            if( newPID == IDLE_PROCESS || newPID == LOGIN_PROCESS || newPID == SHELL_PROCESS || newPID == SWAPPER_DAEMON || newPID == [SYSTEM_STATUS_TABLE + 1]) then
+                // Don't Schedule
+                goto cont;
+            endif;
+            if(([PROCESS_TABLE + (newPID*16) + 4] == READY || [PROCESS_TABLE + (newPID*16) + 4] == CREATED) && [PROCESS_TABLE + (newPID*16) + 6] == 0) then
+                break;
+            endif;
+            cont:
+                newPID = ((newPID + 1)%16);
+                count = count + 1;
+        endwhile;
+
+        if(count >= 17) then
+            newPID = IDLE2_PROCESS;
+        endif;
+    endif;
+
+
+endif;
+
+newPidFound:
+[SYSTEM_STATUS_TABLE + 5*CORE + 1] = newPID;
+
+
+alias new_process_table R3;
+new_process_table = PROCESS_TABLE + newPID*16;
+
+SP = [new_process_table + 11] * 512 + [new_process_table + 12];
+PTBR = [new_process_table + 14];
+PTLR = [new_process_table + 15];
+
+if([new_process_table + 4] == CREATED) then
+    SP = [new_process_table + 13];
+    [new_process_table + 4] = RUNNING;
+    [new_process_table + 9] = 0;
+    // Set the Value for BP from Kernel Stack Top
+    BP = [[PROCESS_TABLE + newPID*16 + 11]*512];
+
+    // Release SCHED_LOCK
+    R1 = RELEASE_LOCK;
+    R2 = SCHED_LOCK;
+    call ACCESS_CONTROL;
+
+    ireturn;
+endif;
+
+[new_process_table + 4] = RUNNING;
+multipop(BP);
+
+// Release SCHED_LOCK
+R1 = RELEASE_LOCK;
+R2 = SCHED_LOCK;
+call ACCESS_CONTROL;
+
+return;

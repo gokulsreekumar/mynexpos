@@ -1,0 +1,119 @@
+//----- GetPID, GetPPID, Wait Syscall, Signal ------------------------------------------------------------------------------------
+
+// ------ ACQUIRE KERNEL LOCK ---------------
+R1 = ACQUIRE_KERN_LOCK;
+call ACCESS_CONTROL;
+
+//---- Extract Syscall Number from User stack (userSP - 5, will have it, as userSP-4 will have args for the Syscall)------------
+alias SysCallNum R1;
+alias userSP R2;
+userSP = SP;
+SysCallNum = [[PAGE_TABLE_BASE + [SYSTEM_STATUS_TABLE + 5*CORE + 1]*20 + 2 * (userSP - 5)/ 512] * 512 + ((userSP - 5) % 512)];
+
+//---- Switch Stack --------------------------------------------------------------------------------------------
+[PROCESS_TABLE+[SYSTEM_STATUS_TABLE + 5*CORE + 1]*16+13] = SP;
+SP = [PROCESS_TABLE+[SYSTEM_STATUS_TABLE + 5*CORE + 1]*16+11]*512-1;
+
+//---- Syscalls ---------------------------------------------------------------------------------------------
+
+//---- GetPID Syscall (SyscallNum = 11) --------------------------------------------------
+if(SysCallNum == 11)
+ then
+ 	[[PTBR + 2 * ((userSP - 1)/ 512)]*512 + ((userSP - 1) % 512) ] = [PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5*CORE + 1]*16 + 1];
+ 	goto end;
+ endif;
+
+
+//---- GetPPID Syscall (SyscallNum = 12) -------------------------------------------------
+ if(SysCallNum == 12)
+ then
+ 	[[PTBR + 2 * ((userSP - 1)/ 512)]*512 + ((userSP - 1) % 512) ] = [PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5*CORE + 1]*16 + 2];
+ 	goto end;
+ endif;
+
+
+//---- Wait Syscall (SyscallNum = 13) ----------------------------------------------------
+if(SysCallNum == 13) then
+    //---- Mode Flag -----
+    [PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5*CORE + 1] * 16 + 9] = 13;
+
+    //---- Get PID Arg ----------------------------------------------------
+    alias PID R3;
+    PID = [[PAGE_TABLE_BASE + [SYSTEM_STATUS_TABLE + 5*CORE + 1]*20 + 2 * (userSP - 4)/ 512] * 512 + ((userSP - 4) % 512)];
+
+    //---- Invalid Range, Terminated Process, or Waiting for Itself --------
+    if([PROCESS_TABLE + PID*16 + 4] == TERMINATED || PID == [SYSTEM_STATUS_TABLE + 5*CORE + 1] || PID < 1 || PID > 15) then
+        alias physicalAddrRetVal R4;
+        physicalAddrRetVal = [PTBR + 2 * (userSP-1)/512] * 512 + ((userSP-1)%512);
+        [physicalAddrRetVal] = -1;
+        goto end; 
+    endif;
+
+    //---- PID is Valid -------------------------------------------------------------
+
+    //---- Change State of Current Process, WAITING for PID func to Signal/Terminate -----------
+    [PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5*CORE + 1]*16 + 4] = WAIT_PROCESS;
+    [PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5*CORE + 1]*16 + 5] = PID;
+    
+
+    // RELEASE KERNEL LOCK 
+    multipush(R1,R2);
+    R1 = RELEASE_LOCK;
+    R2 = KERN_LOCK;
+    call ACCESS_CONTROL;
+    multipop(R1,R2);
+
+    //---- Scheduler ------------------------
+    multipush(R1,R2,R3,R4);
+    call SCHEDULER;
+    multipop(R1,R2,R3,R4);
+
+    // ACQUIRE KERNEL LOCK 
+    multipush(R1,R2);
+    R1 = ACQUIRE_KERN_LOCK;
+    call ACCESS_CONTROL;
+    multipop(R1,R2);
+
+    //---- Executed only after READY state is achieved --------------
+
+    //---- Mode Flag and returning with 0 ------
+    alias physicalAddrRetVal R4;
+    physicalAddrRetVal = [PTBR + 2 * (userSP-1)/512] * 512 + ((userSP-1)%512);
+    [physicalAddrRetVal] = 0;
+    goto end;
+
+endif;
+
+
+//---- Signal Syscall (SyscallNum = 14) ------------------------------------------------------------
+if(SysCallNum == 14) then
+    //---- Mode Flag -----
+    [PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5*CORE + 1] * 16 + 9] = 14;
+    alias cnt R3;
+    cnt = 0;
+    while(cnt < 16) do
+        if([PROCESS_TABLE + cnt*16 + 4] == WAIT_PROCESS &&  [PROCESS_TABLE + cnt*16 + 5] == [SYSTEM_STATUS_TABLE + 5*CORE + 1]) then
+            [PROCESS_TABLE + cnt*16 + 4] = READY;
+        endif;
+    endwhile;
+    alias physicalAddrRetVal R4;
+    physicalAddrRetVal = [PTBR + 2 * (userSP-1)/512] * 512 + ((userSP-1)%512);
+    [physicalAddrRetVal] = 0;
+    goto end;
+endif;
+
+//------ Change back to userSP ----------------------------
+
+[PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 5*CORE + 1] * 16 + 9] = 0;
+SP = userSP;
+
+end:
+// RELEASE KERNEL LOCK 
+multipush(R1,R2);
+R1 = RELEASE_LOCK;
+R2 = KERN_LOCK;
+call ACCESS_CONTROL;
+multipop(R1,R2);
+
+ireturn;
+

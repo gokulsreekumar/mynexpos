@@ -1,0 +1,41 @@
+// ------------------------------------------ ACCESS CONTROL MODULE ---------------------------------------------------------------------- //
+
+alias functionNum R1;
+
+if(functionNum == ACQUIRE_KERN_LOCK) then
+    if(CORE == SECONDARY_CORE) then
+        if([SYSTEM_STATUS_TABLE + 5] == 1 || [SYSTEM_STATUS_TABLE + 7] == 1) then
+            // PAGING_STATUS or LOGOUT_STATUS is on
+            // Set Curr Process to READY
+            // CURR PROCESS IN SECONDARY_CORE
+            [PROCESS_TABLE + [SYSTEM_STATUS_TABLE + 6]*16 + 4] = READY;
+
+            // * Scheduler Module  appropriately modified before running on the NEXSM machine */
+            call SCHEDULER; 
+        endif;
+    endif;
+
+    while( tsl(KERN_LOCK) == 1 ) do
+        continue;
+    endwhile;
+
+    return;
+endif;
+
+if(functionNum == ACQUIRE_SCHED_LOCK) then
+    while( tsl(SCHED_LOCK) == 1 ) do
+        continue;
+    endwhile;
+
+    return;
+endif;
+
+if( functionNum == RELEASE_LOCK ) then
+    alias LockVarAddress R2;
+    
+    // Store 0 to the address LockVarAddress.
+    [LockVarAddress] = 0;
+
+    return;
+
+endif;

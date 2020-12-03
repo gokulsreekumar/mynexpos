@@ -1,0 +1,11 @@
+// ---- OS STARTUP CODE 2 --------------------------------------------------------------------------------------- //
+
+
+// set entry point in user stack for IDLE 2
+[83 * 512] = [69*512 + 1];
+
+SP = 8*512;
+PTBR = PAGE_TABLE_BASE + 14*20;
+PTLR = 10;
+
+ireturn;
